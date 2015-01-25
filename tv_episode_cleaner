@@ -1,0 +1,91 @@
+#!/usr/bin/env ruby
+require 'logger'
+require 'net/http'
+
+# Location of TV Shows
+MEDIA_DIR = "/Users/will/Media/TV Shows"
+# Number of episodes to keep by default
+KEEP_EPISODES = 15
+# Shows to keep more or less than number of default episodes
+SHOWS = [
+  { name: "Downton Abbey", keep: :all },
+  { name: "Columbus Neighborhoods_ Clintonville", keep: :all },
+  { name: "The Bachelor", keep: 5 },
+  { name: "American Idol", keep: 10 }
+]
+# URL which will trigger Plex to refresh TV show list
+PLEX_REFRESH_URL = "http://127.0.0.1:32400/library/sections/3/refresh?turbo=1"
+
+
+Log = Logger.new('/tmp/tv_episode_cleaner.log', 5, 100000)   # rotate log after 100k, keep 5 log files
+Log.level = Logger::INFO
+Log.formatter = proc { |severity, datetime, progname, msg| "#{datetime.strftime('%Y-%m-%d %H:%M:%S')} #{severity}: #{msg}\n" }
+
+
+def run!
+  Log.info "Cleaning TV episodes..."
+  
+  Shows.each do |show|
+    Log.info "Keeping #{show[:keep]} episodes of \"#{show[:name]}\""
+    EpisodeCleaner.new(show[:name], show[:keep]).clean! unless show[:keep] == :all
+  end
+  refresh_plex_library
+end
+
+def refresh_plex_library
+  Net::HTTP.get(URI.parse(PLEX_REFRESH_URL))
+end
+
+class Shows
+  def self.each(&block)
+    all.each(&block)
+  end
+
+  def self.all
+    all_show_names.map { |name| find_show_matching(name) || { name: name, keep: KEEP_EPISODES } }
+  end
+  
+  private
+
+    def self.all_show_names
+      Dir["#{MEDIA_DIR}/*"].sort.map { |f| File.basename(f) }
+    end
+  
+    def self.find_show_matching(name)
+      SHOWS.find { |show| show[:name] == name }
+    end
+end
+
+
+class EpisodeCleaner
+  def initialize(show_name, keep_count)
+    @keep_count = keep_count
+    @episodes = all_episodes(show_name)
+  end
+  
+  def clean!
+    old_episodes.each do |episode|
+      Log.info "DELETING \"#{episode}\""
+      File.delete(episode)
+    end
+    (@episodes - old_episodes).each { |episode| Log.info "Keeping \"#{episode}\"" }
+  end
+  
+  private
+  
+    def old_episodes
+      @episodes.take(old_episode_count)
+    end
+  
+    def old_episode_count
+      @episodes.size - @keep_count > 0 ? @episodes.size - @keep_count : 0
+    end
+  
+    def all_episodes(name)
+      episodes = Dir["#{MEDIA_DIR}/#{name}/**/*"].reject {|fn| File.directory?(fn) }
+      episodes.sort_by {|f| File.mtime(f) }
+    end
+end
+
+# see http://phrogz.net/top-down-ruby-scripts
+run! if __FILE__==$0
